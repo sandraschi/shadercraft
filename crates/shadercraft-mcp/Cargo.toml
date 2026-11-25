@@ -1,0 +1,21 @@
+[package]
+name = "shadercraft-mcp"
+description = "L2 CLI and MCP 2026-07-28 stdio server for ShaderCraft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "shadercraft-mcp"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+shadercraft-core = { path = "../shadercraft-core" }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

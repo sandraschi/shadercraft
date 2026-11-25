@@ -1,0 +1,18 @@
+[package]
+name = "shadercraft-core"
+description = "L1 Deterministic CPU Node-Graph Texture Engine with PBR Map Derivation for ShaderCraft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+image.workspace = true
+
+[lints]
+workspace = true

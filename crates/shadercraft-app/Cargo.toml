@@ -1,0 +1,25 @@
+[package]
+name = "shadercraft-app"
+description = "L3 Native Desktop Studio for ShaderCraft (Graph Editor, 2D Preview, PBR Maps, Presets, Assistant)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "shadercraft-app"
+path = "src/main.rs"
+
+[dependencies]
+eframe.workspace = true
+egui.workspace = true
+shadercraft-core = { path = "../shadercraft-core" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+egui_kittest.workspace = true
+
+[lints]
+workspace = true

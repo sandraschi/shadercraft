@@ -1,0 +1,19 @@
+{
+  "manifest_version": "0.2",
+  "name": "shadercraft",
+  "version": "0.1.0",
+  "description": "Procedural Texture and Particle Forge, Node-Graph Texture Synthesizer with PBR Map Export for Game Art",
+  "author": {
+    "name": "Sandra Schipal",
+    "url": "https://github.com/sandraschi/shadercraft"
+  },
+  "license": "MIT OR Apache-2.0",
+  "server": {
+    "type": "binary",
+    "entry_point": "shadercraft-mcp.exe",
+    "mcp_config": {
+      "command": "${__dirname}/shadercraft-mcp.exe",
+      "args": ["--mcp"]
+    }
+  }
+}

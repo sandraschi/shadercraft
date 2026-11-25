@@ -1,0 +1,2 @@
+# path min-bytes
+assets/shader.svg 300
