@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Wired shared `craft-ai-ui` (`LlmSettingsPanel` + async `complete_live`) into `shadercraft-app` (`Assistant` tab, `Window > LLM Settings...`, and `Ctrl+K` Command Palette) backed by `~/.craft/ai_config.json` and grounded in live texture engine state.
+
 ## [0.1.0] - 2026-11-24
 
 ### Added

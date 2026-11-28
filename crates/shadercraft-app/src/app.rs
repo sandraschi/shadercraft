@@ -1,6 +1,7 @@
 //! ShaderCraft L3 Native Desktop Studio (`eframe` / `egui` 0.37).
 
-use crate::{help_docs, subapps};
+use crate::{chat, help_docs, subapps};
+use craft_ai_ui::LlmSettingsPanel;
 use eframe::egui::{self, Color32, RichText};
 use shadercraft_core::{
     default_db_path, param_specs, Command, GraphPreset, NodeKind, ShaderEngine, APP_VERSION,
@@ -8,6 +9,7 @@ use shadercraft_core::{
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver};
 
 const ATTRIBUTION_MD: &str = include_str!("../../../ATTRIBUTION.md");
 
@@ -87,6 +89,10 @@ pub struct ShaderCraftApp {
     pub pbr_dirty: bool,
     pub chat_input: String,
     pub chat_history: Vec<(String, String)>,
+    pub chat_busy: bool,
+    chat_rx: Option<Receiver<Result<(String, u128), String>>>,
+    pub show_llm_settings: bool,
+    pub llm_settings: LlmSettingsPanel,
     pub help_tab: HelpTab,
     pub show_palette: bool,
     pub palette_query: String,
@@ -128,10 +134,11 @@ impl ShaderCraftApp {
             pbr_tex: Vec::new(),
             pbr_dirty: true,
             chat_input: String::new(),
-            chat_history: vec![(
-                "ShaderCraft".into(),
-                "no model selected -- configure a local model to co-design textures, or ask me about the active graph.".into(),
-            )],
+            chat_history: Vec::new(),
+            chat_busy: false,
+            chat_rx: None,
+            show_llm_settings: false,
+            llm_settings: LlmSettingsPanel::new("shadercraft"),
             help_tab: HelpTab::GetStarted,
             show_palette: false,
             palette_query: String::new(),
@@ -383,6 +390,11 @@ impl ShaderCraftApp {
                         self.goto(p, s);
                         ui.close();
                     }
+                }
+                ui.separator();
+                if ui.button("LLM Settings...").clicked() {
+                    self.show_llm_settings = true;
+                    ui.close();
                 }
             });
             ui.menu_button("Help", |ui| {
@@ -934,16 +946,131 @@ impl ShaderCraftApp {
         }
     }
 
+    fn build_chat_context(&mut self) -> String {
+        let gid = self.graph_id.clone();
+        let graph_count = match Command::Status.dispatch(&mut self.engine) {
+            Ok(val) => val
+                .get("graph_count")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            Err(_) => 0,
+        };
+        let node_summary = match self.engine.graph(&gid) {
+            Ok(g) => {
+                let kinds: Vec<String> = g
+                    .nodes
+                    .iter()
+                    .take(12)
+                    .map(|n| format!("{}({:?})", n.id, n.kind))
+                    .collect();
+                format!(
+                    "name='{}', nodes={}, edges={}, normal_strength={:.2}, roughness_base={:.2}, list=[{}]",
+                    g.name,
+                    g.nodes.len(),
+                    g.edges.len(),
+                    g.normal_strength,
+                    g.roughness_base,
+                    kinds.join(", ")
+                )
+            }
+            Err(_) => "graph unavailable".to_string(),
+        };
+        let stats = self
+            .engine
+            .height_stats(&gid, 64)
+            .map(|(min, max, mean)| format!("min={min:.3} max={max:.3} mean={mean:.3}"))
+            .unwrap_or_else(|e| format!("unavailable ({e})"));
+        format!(
+            "Active graph: {gid} ({graph_count} total graphs) | {node_summary} | 64px heightfield: {stats}"
+        )
+    }
+
+    fn poll_chat(&mut self, ctx: &egui::Context) {
+        if self.chat_busy {
+            ctx.request_repaint();
+        }
+        let Some(rx) = self.chat_rx.as_ref() else {
+            return;
+        };
+        if let Ok(result) = rx.try_recv() {
+            self.chat_rx = None;
+            self.chat_busy = false;
+            match result {
+                Ok((reply, ms)) => {
+                    self.chat_history.push(("assistant".to_string(), reply));
+                    self.status_line = format!("LLM reply received in {ms} ms");
+                }
+                Err(err) => {
+                    self.chat_history
+                        .push(("error".to_string(), format!("LLM error: {err}")));
+                    self.status_line = format!("LLM error: {err}");
+                }
+            }
+        }
+    }
+
     fn render_chat(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Assistant");
+        let (summary, has_model) = chat::active_summary();
+        ui.horizontal(|ui| {
+            ui.heading("Assistant");
+            ui.separator();
+            ui.monospace(&summary);
+            if ui.button("LLM Settings...").clicked() {
+                self.show_llm_settings = true;
+            }
+            if ui
+                .add_enabled(!self.chat_history.is_empty(), egui::Button::new("Clear"))
+                .clicked()
+            {
+                self.chat_history.clear();
+            }
+            if self.chat_busy {
+                ui.spinner();
+                ui.label("Thinking...");
+            }
+        });
+        if !has_model {
+            let warn_color = if self.dark_mode {
+                Color32::from_rgb(248, 113, 113)
+            } else {
+                Color32::from_rgb(185, 28, 28)
+            };
+            ui.colored_label(
+                warn_color,
+                "No model selected in ~/.craft/ai_config.json -- click LLM Settings... to configure Ollama, LM Studio, or a cloud provider.",
+            );
+        }
+        ui.separator();
+
+        let scroll_h = (ui.available_height() - 64.0).max(120.0);
         egui::ScrollArea::vertical()
             .id_salt("chat_scroll")
+            .max_height(scroll_h)
+            .stick_to_bottom(true)
             .show(ui, |ui| {
+                if self.chat_history.is_empty() {
+                    ui.label("Ask how to shape noise nodes, tune PBR roughness/metallic maps, or build a custom material.");
+                }
                 let history = self.chat_history.clone();
-                for (who, text) in &history {
+                for (role, text) in &history {
                     ui.group(|ui| {
-                        ui.strong(who.clone());
-                        ui.label(text.clone());
+                        let speaker = match role.as_str() {
+                            "user" => "You",
+                            "assistant" => "Assistant",
+                            _ => "Error",
+                        };
+                        if role == "error" {
+                            let err_color = if self.dark_mode {
+                                Color32::from_rgb(248, 113, 113)
+                            } else {
+                                Color32::from_rgb(185, 28, 28)
+                            };
+                            ui.colored_label(err_color, speaker);
+                            ui.colored_label(err_color, text);
+                        } else {
+                            ui.strong(speaker);
+                            ui.label(text);
+                        }
                     });
                 }
             });
@@ -951,11 +1078,17 @@ impl ShaderCraftApp {
         ui.horizontal(|ui| {
             let msg_lbl = ui.label("Message:");
             let response = ui
-                .text_edit_singleline(&mut self.chat_input)
+                .add_enabled(
+                    !self.chat_busy,
+                    egui::TextEdit::singleline(&mut self.chat_input)
+                        .desired_width((ui.available_width() - 80.0).max(160.0))
+                        .hint_text("Ask about procedural nodes or PBR materials..."),
+                )
                 .labelled_by(msg_lbl.id);
-            if ui.button("Send").clicked()
-                || response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
-            {
+            let clicked = ui
+                .add_enabled(!self.chat_busy, egui::Button::new("Send"))
+                .clicked();
+            if clicked || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
                 let question = self.chat_input.trim().to_string();
                 if !question.is_empty() {
                     self.chat_input.clear();
@@ -963,31 +1096,29 @@ impl ShaderCraftApp {
                 }
             }
         });
-        ui.small("Local-first chat: answers come from the live engine state.");
+        ui.small("Shared fleet LLM chat (~/.craft/ai_config.json) grounded in live texture engine state.");
     }
 
     fn answer_chat(&mut self, question: String) {
-        self.chat_history
-            .push(("You".to_string(), question.clone()));
-        let reply = match Command::Status.dispatch(&mut self.engine) {
-            Ok(val) => {
-                let graphs = val
-                    .get("graph_count")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0);
-                let gid = self.graph_id.clone();
-                let stats = self
-                    .engine
-                    .height_stats(&gid, 64)
-                    .map(|(min, max, mean)| format!("min {min:.3} max {max:.3} mean {mean:.3}"))
-                    .unwrap_or_else(|e| format!("stats unavailable: {e}"));
-                format!(
-                    "Active graph {gid} in a library of {graphs} graphs. Current 64px heightfield: {stats}. Tune sliders on the Graph Editor tab to reshape it."
-                )
-            }
-            Err(e) => format!("The engine reported an error: {e}"),
-        };
-        self.chat_history.push(("ShaderCraft".to_string(), reply));
+        if self.chat_busy {
+            return;
+        }
+        self.chat_history.push(("user".to_string(), question));
+        let history_for_llm: Vec<(String, String)> = self
+            .chat_history
+            .iter()
+            .filter(|(role, _)| role == "user" || role == "assistant")
+            .cloned()
+            .collect();
+        let workspace_context = self.build_chat_context();
+        let (tx, rx) = mpsc::channel();
+        self.chat_rx = Some(rx);
+        self.chat_busy = true;
+        self.status_line = "Waiting for LLM reply...".to_string();
+        std::thread::spawn(move || {
+            let res = chat::complete_shader_chat(&workspace_context, &history_for_llm);
+            let _ = tx.send(res);
+        });
     }
 
     fn render_help_view(&mut self, ui: &mut egui::Ui) {
@@ -1016,6 +1147,7 @@ impl ShaderCraftApp {
         if self.show_palette {
             let mut open = self.show_palette;
             let mut nav_target: Option<(Page, usize)> = None;
+            let mut open_llm_settings = false;
             egui::Window::new("Command Palette")
                 .open(&mut open)
                 .show(ctx, |ui| {
@@ -1034,12 +1166,37 @@ impl ShaderCraftApp {
                             }
                         }
                     }
+                    if (query.is_empty() || "llm settings".contains(&query))
+                        && ui.button("Open LLM Settings").clicked()
+                    {
+                        open_llm_settings = true;
+                    }
                 });
             self.show_palette = open;
             if let Some((page, sub)) = nav_target {
                 self.goto(page, sub);
                 self.show_palette = false;
             }
+            if open_llm_settings {
+                self.show_llm_settings = true;
+                self.show_palette = false;
+            }
+        }
+        if self.show_llm_settings {
+            let mut open = self.show_llm_settings;
+            egui::Window::new("LLM Settings")
+                .collapsible(false)
+                .resizable(true)
+                .default_width(560.0)
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("shadercraft_llm_settings_scroll")
+                        .show(ui, |ui| {
+                            self.llm_settings.render(ui, self.dark_mode);
+                        });
+                });
+            self.show_llm_settings = open;
         }
         if self.show_shortcuts {
             egui::Window::new("Keyboard Shortcuts")
@@ -1073,6 +1230,7 @@ impl ShaderCraftApp {
 impl eframe::App for ShaderCraftApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.poll_chat(&ctx);
         self.apply_theme(&ctx);
         self.handle_shortcuts(&ctx);
 
@@ -1134,5 +1292,19 @@ mod tests {
         let _ = std::fs::remove_file(&app.db_path);
         let _ = app.preview_tex;
         let _ = app.pbr_tex.len();
+    }
+
+    #[test]
+    fn headless_egui_kittest_llm_settings_renders() {
+        let mut app = temp_app();
+        let mut harness = egui_kittest::HarnessBuilder::default()
+            .with_accessibility_check(false)
+            .build_ui(|ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    app.llm_settings.render(ui, app.dark_mode);
+                });
+            });
+        harness.run();
+        let _ = std::fs::remove_file(&app.db_path);
     }
 }

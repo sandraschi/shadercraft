@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 mod app;
+mod chat;
 mod help_docs;
 mod subapps;
 

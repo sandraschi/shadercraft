@@ -12,6 +12,7 @@ name = "shadercraft-app"
 path = "src/main.rs"
 
 [dependencies]
+craft-ai-ui = { path = "../../../aicraft/crates/craft-ai-ui" }
 eframe.workspace = true
 egui.workspace = true
 shadercraft-core = { path = "../shadercraft-core" }
